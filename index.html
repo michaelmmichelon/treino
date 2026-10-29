@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="pt-BR" data-app="treino">
+<head>
+  <meta charset="utf-8">
+  <!-- viewport-fit=cover: no iPhone a página ocupa a tela toda (inclusive atrás do notch);
+       as margens seguras são devolvidas com env(safe-area-inset-*) no CSS. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Treino</title>
+  <meta name="description" content="Fichas de treino, registro de séries, descanso e evolução de carga">
+
+  <!-- Tudo que o Safari usa quando o app é adicionado à Tela de Início -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Treino">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="icones/icone-180.png">
+  <link rel="icon" href="icones/icone-192.png">
+  <meta name="theme-color" content="#f6f6f8" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f0f12" media="(prefers-color-scheme: dark)">
+
+  <link rel="stylesheet" href="tema.css">
+  <link rel="stylesheet" href="app.css">
+  <script src="ui.js"></script>
+</head>
+<body>
+  <header class="barra-app">
+    <div class="marca">
+      <div class="marca-icone"><i data-icone="haltere"></i></div>
+      <h1 id="titulo">Treino <small id="subtitulo"></small></h1>
+    </div>
+    <div class="acoes-barra"><span data-botao-tema></span></div>
+  </header>
+
+  <main class="pagina" id="conteudo"></main>
+
+  <nav class="abas" aria-label="Seções">
+    <button data-tela="hoje" aria-current="page"><i data-icone="casa" data-tamanho="22"></i><span>Hoje</span></button>
+    <button data-tela="fichas"><i data-icone="lista" data-tamanho="22"></i><span>Fichas</span></button>
+    <button data-tela="exercicios"><i data-icone="haltere" data-tamanho="22"></i><span>Exercícios</span></button>
+    <button data-tela="historico"><i data-icone="grafico" data-tamanho="22"></i><span>Evolução</span></button>
+    <button data-tela="ajustes"><i data-icone="engrenagem" data-tamanho="22"></i><span>Ajustes</span></button>
+  </nav>
+
+  <!-- Treino em andamento: ocupa a tela toda por cima das abas -->
+  <section class="sessao" id="sessao" hidden aria-label="Treino em andamento"></section>
+
+  <!-- Cronômetro de descanso (aparece depois de marcar uma série) -->
+  <div class="descanso" id="descanso" hidden role="timer" aria-live="off">
+    <div class="descanso-barra"><span id="descansoProgresso"></span></div>
+    <div class="descanso-linha">
+      <button class="botao fantasma pequeno" id="descansoMenos">−15s</button>
+      <div class="descanso-centro"><small>Descanso</small><strong class="num" id="descansoTempo">0:00</strong></div>
+      <button class="botao fantasma pequeno" id="descansoMais">+15s</button>
+      <button class="botao secundario pequeno" id="descansoPular">Pular</button>
+    </div>
+  </div>
+
+  <datalist id="listaExercicios"></datalist>
+
+  <script src="exercicios.js"></script>
+  <script src="treinos.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
