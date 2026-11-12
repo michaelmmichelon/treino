@@ -10,8 +10,13 @@ const DESCANSOS = [30, 45, 60, 75, 90, 120, 150, 180, 240, 300];
 // ------------------------------------------------------------------
 // Dados
 // ------------------------------------------------------------------
+// notas: { "<nome sem acento>": "texto" } · corpo: [{ id, data, peso, cintura, ... }]
+// Campos novos entram com valor padrão: backups antigos continuam abrindo.
 function dadosVazios() {
-  return { versao: 1, programas: [], ativo: null, sessoes: [], emAndamento: null, config: { som: true } };
+  return {
+    versao: 1, programas: [], ativo: null, sessoes: [], emAndamento: null, notas: {}, corpo: [],
+    config: { som: true, telaLigada: true, barra: 20, ultimoBackup: null, backupAdiado: null },
+  };
 }
 
 function carregar() {
@@ -55,18 +60,45 @@ function proximoDia(prog) {
   return 0;
 }
 
-// Última vez que o exercício foi feito, em qualquer ficha (compara pelo nome).
+// Séries de aquecimento (aq: true) ficam no histórico, mas não contam em volume, recordes nem sugestões.
+const trabalho = (series) => series.filter((s) => !s.aq);
+const mesmoExercicio = (a, b) => semAcento(a) === semAcento(b);
+
+// Última vez que o exercício foi feito, em qualquer ficha (compara pelo nome). Só séries válidas.
 function ultimaVez(nome) {
-  const alvo = nome.trim().toLowerCase();
   for (let i = dados.sessoes.length - 1; i >= 0; i--) {
-    const e = dados.sessoes[i].exercicios.find((x) => x.nome.trim().toLowerCase() === alvo);
-    if (e) return { data: dados.sessoes[i].inicio, series: e.series };
+    const e = dados.sessoes[i].exercicios.find((x) => mesmoExercicio(x.nome, nome));
+    if (e && trabalho(e.series).length) return { data: dados.sessoes[i].inicio, series: trabalho(e.series) };
   }
   return null;
 }
 
-const volume = (sessao) => sessao.exercicios.reduce((t, e) => t + e.series.reduce((u, s) => u + (s.peso || 0) * (s.reps || 0), 0), 0);
-const totalSeries = (sessao) => sessao.exercicios.reduce((t, e) => t + e.series.length, 0);
+const volume = (sessao) => sessao.exercicios.reduce((t, e) => t + trabalho(e.series).reduce((u, s) => u + (s.peso || 0) * (s.reps || 0), 0), 0);
+const totalSeries = (sessao) => sessao.exercicios.reduce((t, e) => t + trabalho(e.series).length, 0);
+
+// 1RM estimado pela fórmula de Epley: peso × (1 + reps/30)
+const e1rm = (s) => (s.reps <= 1 ? s.peso : s.peso * (1 + s.reps / 30));
+
+// Melhor marca de um conjunto de séries: carga máxima (desempate por reps) e 1RM; sem carga, máximo de reps.
+function melhorMarca(series) {
+  const validas = trabalho(series);
+  const comPeso = validas.filter((s) => s.peso != null && s.peso > 0);
+  if (comPeso.length) {
+    const top = comPeso.reduce((a, b) => (b.peso > a.peso || (b.peso === a.peso && b.reps > a.reps) ? b : a));
+    return { tipo: 'kg', peso: top.peso, reps: top.reps, rm: Math.max(...comPeso.map(e1rm)) };
+  }
+  return validas.length ? { tipo: 'reps', reps: Math.max(...validas.map((s) => s.reps || 0)) } : null;
+}
+const superou = (nova, antiga) => (nova.tipo === 'kg'
+  ? antiga.tipo !== 'kg' || nova.peso > antiga.peso || (nova.peso === antiga.peso && nova.reps > antiga.reps)
+  : antiga.tipo === 'reps' && nova.reps > antiga.reps);
+
+const notaDe = (nome) => dados.notas[semAcento(nome)] || '';
+function salvarNota(nome, texto) {
+  const chave = semAcento(nome);
+  if (texto?.trim()) dados.notas[chave] = texto.trim();
+  else delete dados.notas[chave];
+}
 
 // ------------------------------------------------------------------
 // Formatação
@@ -76,7 +108,9 @@ const doisDig = (n) => String(n).padStart(2, '0');
 const fmtDataCurta = (ts) => { const d = new Date(ts); return `${doisDig(d.getDate())}/${doisDig(d.getMonth() + 1)}`; };
 const fmtData = (ts) => `${DIAS_SEMANA[new Date(ts).getDay()]}, ${fmtDataCurta(ts)}`;
 const fmtNum = (n) => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
-const fmtSerie = (s) => (s.peso != null ? `${fmtNum(s.peso)}×${s.reps}` : `${s.reps} reps`);
+const fmtSerie = (s) => `${s.aq ? 'aq ' : ''}${s.peso != null ? `${fmtNum(s.peso)}×${s.reps}` : `${s.reps} reps`}`;
+const fmtMarca = (m) => (m.tipo === 'kg' ? `${fmtNum(m.peso)} kg × ${m.reps}` : `${m.reps} reps`);
+const DIA_MS = 864e5;
 const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
 const metaEx = (x) => `${x.series} × ${x.reps} · ${fmtSeg(x.descanso)}`;
 
@@ -158,7 +192,7 @@ function render() {
   const prog = programaAtivo();
   document.getElementById('subtitulo').textContent = prog ? prog.nome : 'Escolha uma divisão';
   const telas = { hoje: telaHoje, fichas: telaFichas, exercicios: telaExercicios, historico: telaHistorico, ajustes: telaAjustes };
-  conteudo.replaceChildren(...[telas[tela]()].flat().filter(Boolean));
+  conteudo.replaceChildren(...[telas[tela]()].flat(Infinity).filter(Boolean));
   window.scrollTo(0, y);
 }
 
@@ -186,6 +220,7 @@ function telaHoje() {
     return partes;
   }
 
+  if (precisaBackup()) partes.push(cartaoBackup());
   partes.push(cartaoSemana());
   if (!prog.dias.length) {
     partes.push(el('section', { className: 'cartao' }, vazio('lista', 'Esta ficha está vazia', 'Adicione os dias e exercícios na aba Fichas.')));
@@ -211,6 +246,31 @@ function cartaoEmAndamento() {
   return el('section', { className: 'cartao em-andamento' },
     el('div', {}, el('small', {}, 'Treino em andamento'), el('strong', {}, s.diaNome), el('small', { className: 'num' }, `${feitas} de ${total} séries`)),
     el('button', { className: 'botao primario', onclick: abrirSessao }, icone('play', 16), 'Continuar'));
+}
+
+// Lembrete: mais de 15 dias sem backup (contando do primeiro treino, se nunca fez).
+// "Depois" esconde por 3 dias.
+function precisaBackup() {
+  if (!dados.sessoes.length) return false;
+  const agora = Date.now();
+  const base = dados.config.ultimoBackup ?? dados.sessoes[0].inicio;
+  if (dados.config.backupAdiado && agora - dados.config.backupAdiado < 3 * DIA_MS) return false;
+  return agora - base > 15 * DIA_MS;
+}
+
+function cartaoBackup() {
+  const dias = dados.config.ultimoBackup ? Math.floor((Date.now() - dados.config.ultimoBackup) / DIA_MS) : null;
+  return el('section', { className: 'cartao lembrete-backup' },
+    el('div', { className: 'lembrete-topo' },
+      icone('download', 20),
+      el('div', {},
+        el('strong', {}, 'Hora de fazer um backup'),
+        el('p', {}, dias === null
+          ? `Você já tem ${plural(dados.sessoes.length, 'treino', 'treinos')} salvos só neste celular e ainda não fez nenhum backup.`
+          : `O último foi há ${dias} dias. Se os dados do Safari forem apagados, o histórico vai junto.`))),
+    el('div', { className: 'ficha-acoes' },
+      el('button', { className: 'botao primario pequeno', onclick: exportar }, icone('download', 16), 'Exportar agora'),
+      el('button', { className: 'botao fantasma pequeno', onclick: () => { dados.config.backupAdiado = Date.now(); salvar(); render(); } }, 'Depois')));
 }
 
 function cartaoSemana() {
@@ -342,10 +402,12 @@ function cartaoDiaEditor(prog, d, i) {
     const ok = await confirmar({ titulo: `Excluir "${d.nome}"?`, mensagem: 'Os exercícios deste dia saem da ficha. O histórico continua salvo.', perigoso: true, textoOk: 'Excluir' });
     if (ok) { prog.dias.splice(i, 1); salvar(); render(); }
   };
+  // A nota fica guardada pelo nome do exercício (vale em todas as fichas), não dentro da ficha
+  const separarNota = (r) => { const { nota, ...resto } = r; salvarNota(resto.nome, nota); return resto; };
   const editarEx = async (x, j) => {
     const r = await dialogoExercicio(x);
     if (r === 'excluir') d.exercicios.splice(j, 1);
-    else if (r) Object.assign(x, r);
+    else if (r) Object.assign(x, separarNota(r));
     else return;
     salvar();
     render();
@@ -353,7 +415,7 @@ function cartaoDiaEditor(prog, d, i) {
   const novoEx = async () => {
     const r = await dialogoExercicio(null);
     if (!r || r === 'excluir') return;
-    d.exercicios.push({ id: novoId(), ...r });
+    d.exercicios.push({ id: novoId(), ...separarNota(r) });
     salvar();
     render();
     atualizarListaExercicios();
@@ -368,7 +430,9 @@ function cartaoDiaEditor(prog, d, i) {
       botaoIcone('trash', 'Excluir dia', excluir)),
     d.exercicios.length
       ? el('ol', { className: 'lista-ex' }, d.exercicios.map((x, j) => el('li', {},
-          el('button', { className: 'ex-item', onclick: () => editarEx(x, j) }, el('strong', {}, x.nome), el('small', { className: 'mudo num' }, metaEx(x))),
+          el('button', { className: 'ex-item', onclick: () => editarEx(x, j) },
+            el('strong', {}, x.nome), el('small', { className: 'mudo num' }, metaEx(x)),
+            notaDe(x.nome) ? el('small', { className: 'ex-item-nota' }, icone('nota', 12), notaDe(x.nome)) : null),
           botaoGuia(x.nome),
           botaoIcone('sobe', 'Subir exercício', () => mover(d.exercicios, j, j - 1), j === 0),
           botaoIcone('desce', 'Descer exercício', () => mover(d.exercicios, j, j + 1), j === d.exercicios.length - 1))))
@@ -386,6 +450,7 @@ function dialogoExercicio(atual) {
     const series = el('input', { type: 'number', min: 1, max: 10, value: v.series, inputMode: 'numeric', required: true });
     const reps = el('input', { value: v.reps, maxLength: 12, required: true, placeholder: '8-12' });
     const desc = el('select', {}, DESCANSOS.map((s) => el('option', { value: s, selected: s === v.descanso }, fmtSeg(s))));
+    const nota = el('input', { value: novo ? '' : notaDe(v.nome), maxLength: 200, autocomplete: 'off', placeholder: 'Ex.: banco na posição 4' });
 
     let terminou = false;
     const terminar = (r) => {
@@ -403,12 +468,14 @@ function dialogoExercicio(atual) {
           series: Math.min(10, Math.max(1, parseInt(series.value, 10) || 3)),
           reps: reps.value.trim() || '8-12',
           descanso: Number(desc.value),
+          nota: nota.value,
         });
       },
     },
       el('div', { className: 'dialogo-topo' }, el('div', { className: 'dialogo-icone' }, icone('haltere', 20)), el('h2', {}, novo ? 'Novo exercício' : 'Editar exercício')),
       campo('Exercício', nome),
       el('div', { className: 'grade-3' }, campo('Séries', series), campo('Repetições', reps), campo('Descanso', desc)),
+      campo('Nota (opcional)', nota),
       el('div', { className: 'dialogo-botoes' },
         novo ? null : el('button', { type: 'button', className: 'botao fantasma perigo-texto', style: { marginRight: 'auto' }, onclick: () => terminar('excluir') }, icone('trash', 16), 'Excluir'),
         el('button', { type: 'button', className: 'botao secundario', onclick: () => terminar(null) }, 'Cancelar'),
@@ -449,8 +516,10 @@ function abrirGuia(nome) {
     }, 1400);
   }
 
+  const minhaNota = notaDe(nome);
   const corpo = g
     ? [
+        minhaNota ? el('p', { className: 'ex-nota-texto guia-nota' }, icone('nota', 14), el('span', {}, minhaNota)) : null,
         el('div', { className: 'guia-musculos' },
           el('div', {}, el('small', {}, 'Principal'), el('strong', {}, g.principais)),
           g.secundarios ? el('div', {}, el('small', {}, 'Também trabalha'), el('span', {}, g.secundarios)) : null),
@@ -544,12 +613,87 @@ function abrirSessao() {
   document.body.classList.add('em-treino');
   renderSessao();
   sessaoEl.scrollTop = 0;
+  manterTelaLigada();
 }
 
 function fecharSessao() {
   sessaoEl.hidden = true;
   document.body.classList.remove('em-treino');
+  liberarTela();
   render();
+}
+
+// ------------------------------------------------------------------
+// Tela sempre ligada durante o treino (Wake Lock, iOS 16.4 ou mais novo).
+// O sistema solta a trava quando o app vai para segundo plano; ao voltar, pedimos de novo.
+// ------------------------------------------------------------------
+let travaTela = null;
+async function manterTelaLigada() {
+  if (!dados.config.telaLigada || !('wakeLock' in navigator) || sessaoEl.hidden || travaTela) return;
+  try {
+    travaTela = await navigator.wakeLock.request('screen');
+    travaTela.addEventListener('release', () => { travaTela = null; });
+  } catch {}
+}
+function liberarTela() {
+  travaTela?.release().catch(() => {});
+  travaTela = null;
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') manterTelaLigada(); });
+
+// ------------------------------------------------------------------
+// Calculadora de anilhas: quantas anilhas de cada lado para chegar no peso total
+// ------------------------------------------------------------------
+const ANILHAS = [25, 20, 15, 10, 5, 2.5, 1.25];
+const BARRAS = [[20, 'Barra 20 kg'], [15, 'Barra 15 kg'], [10, 'Barra 10 kg'], [0, 'Sem barra']];
+let ultimoPesoTocado = '';
+
+// Guloso do maior para o menor: com estas anilhas sempre dá o menor número de peças.
+function montarAnilhas(total, barra) {
+  let lado = Math.round(((total - barra) / 2) * 100) / 100;
+  const pecas = [];
+  for (const a of ANILHAS) while (lado >= a - 1e-9) { pecas.push(a); lado = Math.round((lado - a) * 100) / 100; }
+  return { pecas, sobra: lado * 2 };
+}
+
+function abrirCalculadora() {
+  const total = el('input', { type: 'text', inputMode: 'decimal', value: ultimoPesoTocado || '', placeholder: 'Ex.: 80', autocomplete: 'off', 'aria-label': 'Peso total em kg' });
+  const resultado = el('div', { className: 'calc-resultado', 'aria-live': 'polite' });
+  let barra = dados.config.barra ?? 20;
+  const barras = el('div', { className: 'filtro-grupos calc-barras', role: 'tablist' });
+  const desenharBarras = () => barras.replaceChildren(...BARRAS.map(([kg, rotulo]) =>
+    el('button', { type: 'button', role: 'tab', 'aria-selected': String(kg === barra), onclick: () => { barra = kg; dados.config.barra = kg; salvar(); desenharBarras(); calcular(); } }, rotulo)));
+  const calcular = () => {
+    const kg = lerNum(total.value);
+    if (kg === null) { resultado.replaceChildren(el('p', { className: 'mudo' }, 'Digite o peso total que vai levantar.')); return; }
+    if (kg < barra) { resultado.replaceChildren(el('p', { className: 'mudo' }, `O peso é menor que a barra (${fmtNum(barra)} kg).`)); return; }
+    const { pecas, sobra } = montarAnilhas(kg, barra);
+    resultado.replaceChildren(...[
+      el('small', { className: 'mudo' }, barra ? 'Em cada lado da barra' : 'Em cada lado'),
+      pecas.length
+        ? el('div', { className: 'anilhas' }, pecas.map((a) => el('span', { className: `anilha a${String(a).replace('.', '_')}` }, fmtNum(a))))
+        : el('p', {}, 'Só a barra.'),
+      pecas.length ? el('p', { className: 'num' }, `${pecas.map(fmtNum).join(' + ')} kg de cada lado`) : null,
+      sobra > 0.001 ? el('p', { className: 'calc-sobra' }, `Não fecha exato: ficaria ${fmtNum(kg - sobra)} kg (faltam ${fmtNum(sobra)} kg).`) : null,
+    ].filter(Boolean));
+  };
+  total.addEventListener('input', calcular);
+  desenharBarras();
+  calcular();
+
+  const fechar = () => { dlg.close(); dlg.remove(); };
+  const dlg = el('dialog', { className: 'dialogo calc' },
+    el('div', { className: 'calc-conteudo' },
+      el('div', { className: 'dialogo-topo' }, el('div', { className: 'dialogo-icone' }, icone('calculadora', 20)),
+        el('div', {}, el('h2', {}, 'Calculadora de anilhas'), el('p', {}, 'Anilhas de 25, 20, 15, 10, 5, 2,5 e 1,25 kg.'))),
+      campo('Peso total (kg)', total),
+      barras,
+      resultado,
+      el('button', { type: 'button', className: 'botao secundario largo', onclick: fechar }, 'Fechar')));
+  dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(); });
+  dlg.addEventListener('click', (ev) => { if (ev.target === dlg) fechar(); });
+  document.body.append(dlg);
+  dlg.showModal();
 }
 
 function renderSessao() {
@@ -558,10 +702,12 @@ function renderSessao() {
     el('header', { className: 'sessao-topo' },
       el('button', { className: 'botao fantasma icone', 'aria-label': 'Minimizar treino', title: 'Minimizar', onclick: fecharSessao }, icone('desce', 22)),
       el('div', { className: 'sessao-titulo' }, el('strong', {}, s.diaNome), el('small', { className: 'num', id: 'sessaoRelogio' })),
+      el('button', { className: 'botao fantasma icone', 'aria-label': 'Calculadora de anilhas', title: 'Calculadora de anilhas', onclick: abrirCalculadora }, icone('calculadora', 20)),
       el('button', { className: 'botao primario pequeno', onclick: concluirTreino }, 'Concluir')),
     el('div', { className: 'sessao-progresso', role: 'progressbar', id: 'sessaoProgresso' }, el('span')),
     el('div', { className: 'sessao-lista' }, s.exercicios.map((_, i) => cartaoExercicioSessao(i))),
     el('div', { className: 'sessao-rodape' },
+      el('p', { className: 'mudo dica-sessao' }, 'Toque no número de uma série para marcá-la como aquecimento: ela não conta no volume nem nos recordes.'),
       el('button', { className: 'botao fantasma largo perigo-texto', onclick: cancelarTreino }, icone('trash', 16), 'Descartar treino')));
   atualizarProgresso();
   atualizarRelogio();
@@ -570,23 +716,102 @@ function renderSessao() {
 function cartaoExercicioSessao(i) {
   const e = dados.emAndamento.exercicios[i];
   const ultima = ultimaVez(e.nome);
-  const adicionarSerie = () => { e.series.push({ peso: '', reps: '', feito: false }); salvar(); trocarCartao(i); atualizarProgresso(); };
-  const removerSerie = () => { e.series.pop(); salvar(); trocarCartao(i); atualizarProgresso(); };
+  const validas = trabalho(e.series).length;
+  const nota = notaDe(e.nome);
+  const g = guiaDe(e.nome);
+  const mudou = () => { salvar(); trocarCartao(i); atualizarProgresso(); };
+  const adicionarSerie = () => { e.series.push({ peso: '', reps: '', feito: false }); mudou(); };
+  // Aquecimento entra antes das séries válidas
+  const adicionarAquecimento = () => { e.series.splice(e.series.filter((s) => s.aq).length, 0, { peso: '', reps: '', feito: false, aq: true }); mudou(); };
+  const removerSerie = () => { e.series.pop(); mudou(); };
+  const editarNota = async () => {
+    const t = await pedirTexto({ titulo: 'Nota do exercício', mensagem: 'Aparece sempre que este exercício vier no treino. Ex.: banco na posição 4, pegada fechada.', valor: nota, max: 200 });
+    if (t === null) return;
+    salvarNota(e.nome, t);
+    salvar();
+    trocarCartao(i);
+  };
 
   return el('article', { className: 'cartao ex-sessao', dataset: { i } },
     el('div', { className: 'ex-topo' },
-      guiaDe(e.nome) ? el('button', { className: 'ex-miniatura', 'aria-label': `Como fazer ${e.nome}`, onclick: () => abrirGuia(e.nome) },
-        el('img', { src: foto(guiaDe(e.nome), 1), alt: '', loading: 'lazy' }), el('span', {}, icone('info', 12))) : null,
-      el('div', { className: 'ex-titulo' }, el('h2', {}, e.nome), el('p', { className: 'mudo num' }, `${e.series.length} × ${e.reps} · descanso ${fmtSeg(e.descanso)}`)),
-      guiaDe(e.nome) ? null : botaoGuia(e.nome)),
-    ultima && podeSubir(ultima.series, e.reps, e.series.length) ? el('span', { className: 'selo acento ex-subir' }, icone('setaCima', 12), 'Suba a carga') : null,
+      g ? el('button', { className: 'ex-miniatura', 'aria-label': `Como fazer ${e.nome}`, onclick: () => abrirGuia(e.nome) },
+        el('img', { src: foto(g, 1), alt: '', loading: 'lazy' }), el('span', {}, icone('info', 12))) : null,
+      el('div', { className: 'ex-titulo' },
+        el('h2', {}, e.nome),
+        el('p', { className: 'mudo num' }, `${validas} × ${e.reps} · descanso ${fmtSeg(e.descanso)}`),
+        e.original ? el('p', { className: 'ex-trocado' }, icone('trocar', 12), `Só hoje, no lugar de ${e.original}`) : null),
+      g ? null : botaoGuia(e.nome),
+      botaoIcone('trocar', 'Trocar exercício só hoje', () => trocarExercicio(i))),
+    nota ? el('div', { className: 'ex-nota' },
+      el('button', { className: 'ex-nota-texto', onclick: editarNota, 'aria-label': `Editar nota: ${nota}` }, icone('nota', 14), el('span', {}, nota)),
+      botaoIcone('x', 'Apagar nota', () => { salvarNota(e.nome, ''); salvar(); trocarCartao(i); })) : null,
+    ultima && podeSubir(ultima.series, e.reps, validas) ? el('span', { className: 'selo acento ex-subir' }, icone('setaCima', 12), 'Suba a carga') : null,
     ultima ? el('p', { className: 'ex-ultima num' }, el('span', { className: 'mudo' }, `Última vez (${fmtDataCurta(ultima.data)}): `), ultima.series.map(fmtSerie).join(' · ')) : null,
     el('div', { className: 'series' },
       el('div', { className: 'serie cabeca', 'aria-hidden': 'true' }, el('span', {}, 'Série'), el('span', {}, 'kg'), el('span', {}, 'Reps'), el('span')),
       e.series.map((_, j) => linhaSerie(i, j, ultima))),
     el('div', { className: 'ex-acoes' },
       el('button', { className: 'botao fantasma pequeno', onclick: adicionarSerie }, icone('plus', 16), 'Série'),
+      el('button', { className: 'botao fantasma pequeno', onclick: adicionarAquecimento }, icone('fogo', 16), 'Aquecimento'),
+      nota ? null : el('button', { className: 'botao fantasma pequeno', onclick: editarNota }, icone('nota', 16), 'Nota'),
       e.series.length > 1 ? el('button', { className: 'botao fantasma pequeno', onclick: removerSerie }, icone('x', 16), 'Tirar a última') : null));
+}
+
+// Troca o exercício só no treino de hoje (máquina ocupada): a ficha continua igual.
+async function trocarExercicio(i) {
+  const e = dados.emAndamento.exercicios[i];
+  const novo = await dialogoTrocar(e.original || e.nome, e.nome);
+  if (!novo || mesmoExercicio(novo, e.nome)) return;
+  if (e.series.some((s) => s.feito)) {
+    const ok = await confirmar({ titulo: 'Trocar o exercício?', mensagem: 'As séries já marcadas deste exercício serão apagadas.', textoOk: 'Trocar' });
+    if (!ok) return;
+  }
+  const original = e.original || e.nome;
+  e.nome = novo;
+  if (mesmoExercicio(novo, original)) delete e.original;
+  else e.original = original;
+  e.series = e.series.map((s) => ({ peso: '', reps: '', feito: false, ...(s.aq && { aq: true }) }));
+  salvar();
+  trocarCartao(i);
+  atualizarProgresso();
+}
+
+// Lista de substitutos: mesmo grupo muscular primeiro; a busca procura em todos. Devolve o nome ou null.
+function dialogoTrocar(original, atual) {
+  return new Promise((resolve) => {
+    const grupo = guiaDe(original)?.grupo;
+    let terminou = false;
+    const terminar = (r) => { if (terminou) return; terminou = true; resolve(r); dlg.close(); dlg.remove(); };
+    const lista = el('div', { className: 'trocar-lista' });
+    const busca = el('input', { type: 'search', placeholder: 'Buscar outro exercício', autocomplete: 'off', 'aria-label': 'Buscar exercício' });
+    const item = (nome, detalhe, img) => el('button', { type: 'button', className: 'trocar-item', onclick: () => terminar(nome) },
+      img ? el('img', { src: img, alt: '', loading: 'lazy' }) : el('span', { className: 'trocar-sem-foto' }, icone('haltere', 18)),
+      el('span', {}, el('strong', {}, nome), detalhe ? el('small', { className: 'mudo' }, detalhe) : null));
+    const desenhar = () => {
+      const termo = semAcento(busca.value);
+      const candidatos = Object.values(GUIA).filter((g) => !mesmoExercicio(g.nome, atual) &&
+        (termo ? semAcento(`${g.nome} ${g.principais}`).includes(termo) : g.grupo === grupo));
+      const itens = [];
+      if (!mesmoExercicio(original, atual)) itens.push(item(original, 'Voltar ao exercício da ficha', guiaDe(original) && foto(guiaDe(original), 1)));
+      candidatos.forEach((g) => itens.push(item(g.nome, g.principais, foto(g, 1))));
+      if (termo && !candidatos.some((g) => semAcento(g.nome) === termo)) itens.push(item(busca.value.trim(), 'Usar este nome', null));
+      if (!itens.length) itens.push(el('p', { className: 'mudo' }, 'Digite o nome do exercício que vai fazer.'));
+      lista.replaceChildren(...itens);
+    };
+    busca.addEventListener('input', desenhar);
+    desenhar();
+    const dlg = el('dialog', { className: 'dialogo trocar' },
+      el('div', { className: 'trocar-conteudo' },
+        el('div', { className: 'dialogo-topo' }, el('div', { className: 'dialogo-icone' }, icone('trocar', 20)),
+          // autofocus no título: no iPhone, focar a busca abriria o teclado por cima da lista
+          el('div', {}, el('h2', { tabIndex: -1, autofocus: true }, 'Trocar só hoje'), el('p', {}, grupo ? `Opções de ${grupo.toLowerCase()} no lugar de ${original}. A ficha não muda.` : 'A ficha não muda.'))),
+        el('div', { className: 'entrada' }, icone('search', 18), busca),
+        lista,
+        el('button', { type: 'button', className: 'botao secundario largo', onclick: () => terminar(null) }, 'Cancelar')));
+    dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); terminar(null); });
+    document.body.append(dlg);
+    dlg.showModal();
+  });
 }
 
 // Troca só o cartão do exercício: redesenhar a tela inteira faria a rolagem voltar ao topo.
@@ -594,13 +819,15 @@ function trocarCartao(i) {
   sessaoEl.querySelector(`.ex-sessao[data-i="${i}"]`).replaceWith(cartaoExercicioSessao(i));
 }
 
-// Valor sugerido (aparece apagado no campo): carga da série anterior de hoje,
-// senão o que foi feito na última vez; repetições da última vez ou o topo da faixa.
+// Valor sugerido (aparece apagado no campo): carga da série anterior de hoje (do mesmo tipo:
+// aquecimento puxa de aquecimento), senão o que foi feito na última vez; reps da última vez ou o topo da faixa.
 function sugestao(e, j, ultima) {
-  const ant = e.series.slice(0, j).reverse().find((x) => x.peso !== '');
-  const u = ultima ? (ultima.series[j] || ultima.series[ultima.series.length - 1]) : null;
+  const sr = e.series[j];
+  const ant = e.series.slice(0, j).reverse().find((x) => x.peso !== '' && !x.aq === !sr.aq);
+  const k = trabalho(e.series.slice(0, j)).length; // posição entre as séries válidas
+  const u = ultima && !sr.aq ? (ultima.series[k] || ultima.series[ultima.series.length - 1]) : null;
   const peso = ant ? ant.peso : (u && u.peso != null ? fmtNum(u.peso) : '');
-  const reps = u ? String(u.reps) : String(topoFaixa(e.reps) ?? '');
+  const reps = u ? String(u.reps) : sr.aq ? '' : String(topoFaixa(e.reps) ?? '');
   return { peso, reps };
 }
 
@@ -608,13 +835,23 @@ function linhaSerie(i, j, ultima) {
   const e = dados.emAndamento.exercicios[i];
   const sr = e.series[j];
   const ref = sugestao(e, j, ultima);
-  const peso = el('input', { type: 'text', inputMode: 'decimal', className: 'num', value: sr.peso, placeholder: ref.peso || '–', autocomplete: 'off', 'aria-label': `Carga da série ${j + 1} em kg` });
-  const reps = el('input', { type: 'text', inputMode: 'numeric', className: 'num', value: sr.reps, placeholder: ref.reps || '–', autocomplete: 'off', 'aria-label': `Repetições da série ${j + 1}` });
+  const n = sr.aq ? 'A' : trabalho(e.series.slice(0, j + 1)).length;
+  const nome = sr.aq ? 'aquecimento' : `série ${n}`;
+  const peso = el('input', { type: 'text', inputMode: 'decimal', className: 'num', value: sr.peso, placeholder: ref.peso || '–', autocomplete: 'off', 'aria-label': `Carga da ${nome} em kg` });
+  const reps = el('input', { type: 'text', inputMode: 'numeric', className: 'num', value: sr.reps, placeholder: ref.reps || '–', autocomplete: 'off', 'aria-label': `Repetições da ${nome}` });
   peso.addEventListener('input', () => { sr.peso = peso.value.trim(); salvar(); });
+  peso.addEventListener('focus', () => { ultimoPesoTocado = peso.value || peso.placeholder; });
   reps.addEventListener('input', () => { sr.reps = reps.value.trim(); salvar(); });
-  return el('div', { className: `serie${sr.feito ? ' feita' : ''}` },
-    el('span', { className: 'serie-n num' }, j + 1), peso, reps,
-    el('button', { className: 'marcar', 'aria-pressed': String(sr.feito), 'aria-label': `Série ${j + 1} feita`, onclick: () => marcar(i, j) }, icone('check', 20)));
+  // Tocar no número alterna entre série válida e aquecimento
+  const alternarAq = () => {
+    if (sr.aq) delete sr.aq; else sr.aq = true;
+    salvar();
+    trocarCartao(i);
+  };
+  return el('div', { className: `serie${sr.feito ? ' feita' : ''}${sr.aq ? ' aquecimento' : ''}` },
+    el('button', { className: 'serie-n num', onclick: alternarAq, title: 'Tocar: alterna aquecimento', 'aria-label': sr.aq ? 'Aquecimento. Tocar para virar série válida' : `Série ${n}. Tocar para marcar como aquecimento` }, n),
+    peso, reps,
+    el('button', { className: 'marcar', 'aria-pressed': String(sr.feito), 'aria-label': `${nome} feita`, onclick: () => marcar(i, j) }, icone('check', 20)));
 }
 
 function marcar(i, j) {
@@ -633,7 +870,7 @@ function marcar(i, j) {
     if (sr.peso !== '' && lerNum(sr.peso) === null) { toast('Carga inválida', 'erro'); return; }
     sr.feito = true;
     const faltam = s.exercicios.some((x) => x.series.some((y) => !y.feito));
-    if (faltam) iniciarDescanso(e.descanso);
+    if (faltam) iniciarDescanso(sr.aq ? Math.min(e.descanso, 60) : e.descanso); // aquecimento: descanso curto
     else { pararDescanso(); toast('Todas as séries feitas! Toque em Concluir.'); }
   }
   salvar();
@@ -675,13 +912,56 @@ async function concluirTreino() {
   const registro = {
     id: s.id, programaId: s.programaId, diaId: s.diaId, diaNome: s.diaNome, inicio: s.inicio, fim: Date.now(),
     exercicios: s.exercicios
-      .map((e) => ({ nome: e.nome, series: e.series.filter((x) => x.feito).map((x) => ({ peso: lerNum(x.peso), reps: lerNum(x.reps) })) }))
+      .map((e) => ({
+        nome: e.nome,
+        ...(e.original && { original: e.original }),
+        series: e.series.filter((x) => x.feito).map((x) => ({ peso: lerNum(x.peso), reps: lerNum(x.reps), ...(x.aq && { aq: true }) })),
+      }))
       .filter((e) => e.series.length),
   };
+  const recordes = novosRecordes(registro);
   dados.sessoes.push(registro);
   encerrar();
+  mostrarResumo(registro, recordes);
+}
+
+// Compara cada exercício do treino com o melhor já feito antes. A primeira vez não conta como recorde.
+function novosRecordes(registro) {
+  const lista = [];
+  for (const e of registro.exercicios) {
+    const nova = melhorMarca(e.series);
+    if (!nova) continue;
+    let antiga = null;
+    for (const s of dados.sessoes) {
+      const x = s.exercicios.find((y) => mesmoExercicio(y.nome, e.nome));
+      const m = x && melhorMarca(x.series);
+      if (m && (!antiga || superou(m, antiga))) antiga = m;
+    }
+    if (antiga && superou(nova, antiga)) lista.push({ nome: e.nome, nova, antiga });
+  }
+  return lista;
+}
+
+function mostrarResumo(registro, recordes) {
   const vol = volume(registro);
-  toast(`Treino salvo: ${fmtDuracao(registro.fim - registro.inicio)} · ${feitas} séries${vol ? ` · ${fmtNum(vol)} kg` : ''}`, 'sucesso', 4500);
+  const fechar = () => { dlg.close(); dlg.remove(); };
+  const dlg = el('dialog', { className: 'dialogo resumo' },
+    el('div', { className: 'resumo-conteudo' },
+      el('div', { className: 'resumo-topo' },
+        el('div', { className: 'resumo-icone' }, icone(recordes.length ? 'trofeu' : 'check', 28)),
+        el('h2', {}, recordes.length ? (recordes.length === 1 ? 'Novo recorde!' : `${recordes.length} novos recordes!`) : 'Treino concluído!'),
+        el('p', { className: 'mudo' }, registro.diaNome)),
+      el('div', { className: 'numeros' },
+        numero('Duração', fmtDuracao(registro.fim - registro.inicio)),
+        numero('Séries', String(totalSeries(registro))),
+        numero('Volume', vol ? `${fmtNum(vol)} kg` : '–')),
+      recordes.length ? el('ul', { className: 'lista-recordes' }, recordes.map((r) => el('li', {},
+        icone('trofeu', 18),
+        el('span', {}, el('strong', {}, r.nome), el('small', { className: 'mudo num' }, `${fmtMarca(r.nova)} · antes ${fmtMarca(r.antiga)}`))))) : null,
+      el('button', { className: 'botao primario largo', onclick: fechar }, 'Fechar')));
+  dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(); });
+  document.body.append(dlg);
+  dlg.showModal();
 }
 
 async function cancelarTreino() {
@@ -788,27 +1068,33 @@ let limiteHistorico = 15;
 // Um ponto por treino: carga máxima ou 1RM estimado (fórmula de Epley: peso × (1 + reps/30)).
 // Exercício sem carga (barra fixa, prancha) usa o máximo de repetições.
 function pontosExercicio(nome) {
-  const alvo = nome.toLowerCase();
   const pontos = [];
   for (const s of dados.sessoes) {
-    const e = s.exercicios.find((x) => x.nome.toLowerCase() === alvo);
-    if (!e) continue;
-    const comPeso = e.series.filter((x) => x.peso != null);
-    if (comPeso.length) {
-      const melhor = comPeso.reduce((a, b) => (b.peso > a.peso || (b.peso === a.peso && b.reps > a.reps) ? b : a));
-      const rm = Math.max(...comPeso.map((x) => (x.reps <= 1 ? x.peso : x.peso * (1 + x.reps / 30))));
-      pontos.push({ data: s.inicio, valor: metrica === 'carga' ? melhor.peso : Math.round(rm * 10) / 10, unidade: 'kg', detalhe: e.series.map(fmtSerie).join(' · ') });
-    } else {
-      pontos.push({ data: s.inicio, valor: Math.max(...e.series.map((x) => x.reps || 0)), unidade: 'reps', detalhe: e.series.map(fmtSerie).join(' · ') });
-    }
+    const e = s.exercicios.find((x) => mesmoExercicio(x.nome, nome));
+    const m = e && melhorMarca(e.series);
+    if (!m) continue;
+    const detalhe = trabalho(e.series).map(fmtSerie).join(' · ');
+    if (m.tipo === 'kg') pontos.push({ data: s.inicio, valor: metrica === 'carga' ? m.peso : Math.round(m.rm * 10) / 10, unidade: 'kg', detalhe });
+    else pontos.push({ data: s.inicio, valor: m.reps, unidade: 'reps', detalhe });
   }
   return pontos;
 }
 
+let abaEvolucao = 'cargas';
+
 function telaHistorico() {
+  const abas = segmentado([['cargas', 'Cargas'], ['recordes', 'Recordes'], ['corpo', 'Corpo'], ['mes', 'Mês']], abaEvolucao, (v) => { abaEvolucao = v; render(); window.scrollTo(0, 0); });
+  abas.classList.add('largo');
+  if (abaEvolucao === 'corpo') return [abas, telaCorpo()];
   if (!dados.sessoes.length) {
-    return el('section', { className: 'cartao' }, vazio('grafico', 'Nada por aqui ainda', 'Conclua o primeiro treino para ver o histórico e a evolução das cargas.'));
+    return [abas, el('section', { className: 'cartao' }, vazio('grafico', 'Nada por aqui ainda', 'Conclua o primeiro treino para ver a evolução, os recordes e o resumo do mês.'))];
   }
+  if (abaEvolucao === 'recordes') return [abas, telaRecordes()];
+  if (abaEvolucao === 'mes') return [abas, telaMes()];
+  return [abas, telaCargas()];
+}
+
+function telaCargas() {
   // Exercícios do mais recente para o mais antigo
   const nomes = [];
   for (let i = dados.sessoes.length - 1; i >= 0; i--) {
@@ -833,7 +1119,7 @@ function telaHistorico() {
       numero('Recorde', `${fmtNum(recorde)} ${unidade}`),
       numero('Último', `${fmtNum(ultimo.valor)} ${unidade}`),
       numero('Desde o início', `${variacao > 0 ? '+' : ''}${fmtNum(variacao)} ${unidade}`)),
-    graficoLinha(pontos, unidade),
+    graficoLinha(pontos, unidade, `Evolução de ${exGrafico}`),
     pontos.length < 2 ? el('p', { className: 'mudo nota' }, 'Faça este exercício mais vezes para ver a linha de evolução.') : null,
     metrica === '1rm' && unidade === 'kg' ? el('p', { className: 'mudo nota' }, '1RM estimado: a carga que você levantaria uma única vez, calculada pela melhor série do dia.') : null,
     el('details', { className: 'tabela-dados' },
@@ -849,7 +1135,9 @@ function telaHistorico() {
       el('summary', {},
         el('span', {}, el('strong', {}, s.diaNome), el('small', { className: 'mudo num' }, `${fmtData(s.inicio)} · ${fmtDuracao(s.fim - s.inicio)} · ${totalSeries(s)} séries${vol ? ` · ${fmtNum(vol)} kg` : ''}`)),
         icone('desce', 18)),
-      el('ul', { className: 'hist-ex' }, s.exercicios.map((e) => el('li', {}, el('span', {}, e.nome), el('span', { className: 'mudo num' }, e.series.map(fmtSerie).join(' · '))))),
+      el('ul', { className: 'hist-ex' }, s.exercicios.map((e) => el('li', {},
+        el('span', {}, e.nome, e.original ? el('small', { className: 'mudo' }, ` (no lugar de ${e.original})`) : null),
+        el('span', { className: 'mudo num' }, e.series.map(fmtSerie).join(' · '))))),
       el('button', {
         className: 'botao fantasma pequeno perigo-texto',
         onclick: async () => {
@@ -869,6 +1157,202 @@ function telaHistorico() {
 
 const numero = (rotulo, valor) => el('div', {}, el('small', {}, rotulo), el('strong', { className: 'num' }, valor));
 
+// ------------------------------------------------------------------
+// Recordes pessoais: a melhor marca de cada exercício e quando foi feita
+// ------------------------------------------------------------------
+function telaRecordes() {
+  const melhores = new Map(); // chave sem acento → { nome, marca, data }
+  for (const s of dados.sessoes) {
+    for (const e of s.exercicios) {
+      const m = melhorMarca(e.series);
+      if (!m) continue;
+      const chave = semAcento(e.nome);
+      const atual = melhores.get(chave);
+      if (!atual || superou(m, atual.marca)) melhores.set(chave, { nome: e.nome, marca: m, data: s.inicio });
+    }
+  }
+  const lista = [...melhores.values()].sort((a, b) => b.data - a.data);
+  const recente = Date.now() - 7 * DIA_MS;
+  return [
+    el('p', { className: 'mudo editor-desc' }, 'Sua melhor série em cada exercício (carga mais alta; empate decide pelas repetições). Os mais recentes aparecem primeiro.'),
+    el('div', { className: 'pilha lista-guia' }, lista.map((r) => {
+      const g = guiaDe(r.nome);
+      return el('button', { className: 'cartao item-guia recorde', onclick: () => { exGrafico = r.nome; abaEvolucao = 'cargas'; render(); window.scrollTo(0, 0); } },
+        g ? el('img', { src: foto(g, 1), alt: '', loading: 'lazy', width: 72, height: 48 }) : el('span', { className: 'trocar-sem-foto' }, icone('trofeu', 18)),
+        el('span', {},
+          el('strong', {}, r.nome),
+          el('small', { className: 'num' }, fmtMarca(r.marca), r.marca.tipo === 'kg' ? el('span', { className: 'mudo' }, ` · 1RM est. ${fmtNum(Math.round(r.marca.rm))} kg`) : null),
+          el('small', { className: 'mudo num' }, fmtData(r.data))),
+        r.data >= recente ? el('span', { className: 'selo acento' }, 'Novo') : icone('direita', 18));
+    })),
+  ];
+}
+
+// ------------------------------------------------------------------
+// Corpo: peso e medidas
+// ------------------------------------------------------------------
+const MEDIDAS = [['peso', 'Peso', 'kg'], ['cintura', 'Cintura', 'cm'], ['peito', 'Peito', 'cm'], ['braco', 'Braço', 'cm'], ['coxa', 'Coxa', 'cm']];
+let medidaGrafico = 'peso';
+
+function telaCorpo() {
+  const registros = dados.corpo.slice().sort((a, b) => a.data - b.data);
+  const comDados = MEDIDAS.filter(([k]) => registros.some((r) => r[k] != null));
+  if (!comDados.some(([k]) => k === medidaGrafico) && comDados.length) medidaGrafico = comDados[0][0];
+  const [, nomeMedida, unidade] = MEDIDAS.find(([k]) => k === medidaGrafico);
+  const pontos = registros.filter((r) => r[medidaGrafico] != null).map((r) => ({ data: r.data, valor: r[medidaGrafico], unidade, detalhe: '' }));
+
+  const botaoNovo = el('button', { className: 'botao primario largo', onclick: () => registrarCorpo() }, icone('plus', 18), 'Registrar peso e medidas');
+  if (!pontos.length) {
+    return [botaoNovo, el('section', { className: 'cartao' }, vazio('atividade', 'Nenhuma medida ainda', 'Registre seu peso (e, se quiser, cintura, braço...) uma vez por semana, de manhã, para acompanhar a evolução.'))];
+  }
+  const primeiro = pontos[0];
+  const ultimo = pontos[pontos.length - 1];
+  const variacao = Math.round((ultimo.valor - primeiro.valor) * 10) / 10;
+
+  return [
+    botaoNovo,
+    el('section', { className: 'cartao grafico-cartao' },
+      el('h2', {}, nomeMedida),
+      comDados.length > 1 ? el('div', { className: 'filtro-grupos' }, comDados.map(([k, n]) =>
+        el('button', { role: 'tab', 'aria-selected': String(k === medidaGrafico), onclick: () => { medidaGrafico = k; render(); } }, n))) : null,
+      el('div', { className: 'numeros' },
+        numero('Atual', `${fmtNum(ultimo.valor)} ${unidade}`),
+        numero('Desde o início', `${variacao > 0 ? '+' : ''}${fmtNum(variacao)} ${unidade}`),
+        numero('Registros', String(pontos.length))),
+      graficoLinha(pontos, unidade, nomeMedida),
+      pontos.length < 2 ? el('p', { className: 'mudo nota' }, 'Registre de novo nos próximos dias para ver a linha de evolução.') : null),
+    el('h2', { className: 'secao' }, 'Registros'),
+    el('div', { className: 'pilha' }, registros.slice().reverse().map((r) => el('section', { className: 'cartao registro-corpo' },
+      el('span', {},
+        el('strong', { className: 'num' }, fmtData(r.data)),
+        el('small', { className: 'mudo num' }, MEDIDAS.filter(([k]) => r[k] != null).map(([k, n, u]) => `${n} ${fmtNum(r[k])} ${u}`).join(' · '))),
+      botaoIcone('pencil', 'Editar registro', () => registrarCorpo(r)),
+      botaoIcone('trash', 'Excluir registro', async () => {
+        const ok = await confirmar({ titulo: 'Excluir este registro?', mensagem: fmtData(r.data), perigoso: true, textoOk: 'Excluir' });
+        if (ok) { dados.corpo = dados.corpo.filter((x) => x.id !== r.id); salvar(); render(); }
+      })))),
+  ];
+}
+
+// Data local no formato do <input type="date"> (yyyy-mm-dd)
+const dataInput = (ts) => { const d = new Date(ts); return `${d.getFullYear()}-${doisDig(d.getMonth() + 1)}-${doisDig(d.getDate())}`; };
+
+function registrarCorpo(atual) {
+  const ultimo = dados.corpo.slice().sort((a, b) => b.data - a.data)[0];
+  const data = el('input', { type: 'date', value: dataInput(atual?.data ?? Date.now()), required: true });
+  const entradas = Object.fromEntries(MEDIDAS.map(([k]) => [k, el('input', {
+    type: 'text', inputMode: 'decimal', autocomplete: 'off', value: atual?.[k] != null ? fmtNum(atual[k]) : '',
+    placeholder: ultimo?.[k] != null ? fmtNum(ultimo[k]) : '–',
+  })]));
+  let terminou = false;
+  const fechar = () => { if (terminou) return; terminou = true; dlg.close(); dlg.remove(); };
+  const form = el('form', {
+    onsubmit: (ev) => {
+      ev.preventDefault();
+      const valores = {};
+      for (const [k] of MEDIDAS) {
+        const n = lerNum(entradas[k].value);
+        if (entradas[k].value.trim() && (n === null || n <= 0)) { toast('Confira os números', 'erro'); return; }
+        if (n !== null) valores[k] = n;
+      }
+      if (!Object.keys(valores).length) { toast('Preencha pelo menos uma medida', 'info'); return; }
+      const [a, m, d] = data.value.split('-').map(Number);
+      const quando = new Date(a, m - 1, d, 12).getTime(); // meio-dia: evita pular de dia por fuso
+      if (atual) {
+        MEDIDAS.forEach(([k]) => delete atual[k]);
+        Object.assign(atual, valores, { data: quando });
+      } else {
+        dados.corpo.push({ id: novoId(), data: quando, ...valores });
+      }
+      salvar();
+      fechar();
+      render();
+      toast('Medidas salvas');
+    },
+  },
+    el('div', { className: 'dialogo-topo' }, el('div', { className: 'dialogo-icone' }, icone('atividade', 20)),
+      el('div', {}, el('h2', { tabIndex: -1, autofocus: true }, atual ? 'Editar medidas' : 'Peso e medidas'), el('p', {}, 'Preencha só o que quiser acompanhar. As medidas são em centímetros.'))),
+    campo('Data', data),
+    el('div', { className: 'grade-2' }, MEDIDAS.map(([k, n, u]) => campo(`${n} (${u})`, entradas[k]))),
+    el('div', { className: 'dialogo-botoes' },
+      el('button', { type: 'button', className: 'botao secundario', onclick: fechar }, 'Cancelar'),
+      el('button', { type: 'submit', className: 'botao primario' }, 'Salvar')));
+  const dlg = el('dialog', { className: 'dialogo' }, form);
+  dlg.addEventListener('cancel', (ev) => { ev.preventDefault(); fechar(); });
+  document.body.append(dlg);
+  dlg.showModal();
+}
+
+// ------------------------------------------------------------------
+// Resumo do mês: totais, comparação com o mês anterior e séries por grupo muscular
+// ------------------------------------------------------------------
+let mesDeslocamento = 0; // 0 = mês atual, 1 = anterior...
+
+// ateDia: corta o mês nesse dia (para comparar o mês em andamento com o mesmo período do anterior)
+function totaisDoMes(ano, mes, ateDia) {
+  const ini = new Date(ano, mes, 1).getTime();
+  const fimMes = new Date(ano, mes + 1, 1).getTime();
+  const fim = ateDia ? Math.min(fimMes, new Date(ano, mes, ateDia + 1).getTime()) : fimMes;
+  const sessoes = dados.sessoes.filter((s) => s.inicio >= ini && s.inicio < fim);
+  return {
+    sessoes,
+    treinos: sessoes.length,
+    tempo: sessoes.reduce((t, s) => t + (s.fim - s.inicio), 0),
+    series: sessoes.reduce((t, s) => t + totalSeries(s), 0),
+    volume: sessoes.reduce((t, s) => t + volume(s), 0),
+  };
+}
+
+function telaMes() {
+  const ref = new Date();
+  ref.setDate(1);
+  ref.setMonth(ref.getMonth() - mesDeslocamento);
+  const atual = totaisDoMes(ref.getFullYear(), ref.getMonth());
+  const emAndamento = mesDeslocamento === 0;
+  const anterior = totaisDoMes(ref.getFullYear(), ref.getMonth() - 1, emAndamento ? new Date().getDate() : null);
+  const nomeMes = ref.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  const nomeAnterior = new Date(ref.getFullYear(), ref.getMonth() - 1, 1).toLocaleDateString('pt-BR', { month: 'long' });
+  const primeiroTreino = dados.sessoes.reduce((m, s) => Math.min(m, s.inicio), Infinity);
+  const temAnterior = new Date(ref.getFullYear(), ref.getMonth(), 1).getTime() > primeiroTreino;
+
+  // Séries válidas por grupo (exercício sem guia entra em "Outros")
+  const porGrupo = new Map(GRUPOS.map((g) => [g, 0]));
+  for (const s of atual.sessoes) {
+    for (const e of s.exercicios) {
+      const g = guiaDe(e.nome)?.grupo || 'Outros';
+      porGrupo.set(g, (porGrupo.get(g) || 0) + trabalho(e.series).length);
+    }
+  }
+  const grupos = [...porGrupo].sort((a, b) => b[1] - a[1]);
+  const maior = Math.max(1, grupos[0][1]);
+  const diferenca = atual.treinos - anterior.treinos;
+  const periodo = emAndamento ? `no mesmo período de ${nomeAnterior} (até o dia ${new Date().getDate()})` : `em ${nomeAnterior}`;
+  const comparacao = !anterior.treinos ? null
+    : diferenca === 0 ? `Mesmo número de treinos que ${periodo}.`
+    : `${plural(Math.abs(diferenca), 'treino', 'treinos')} a ${diferenca > 0 ? 'mais' : 'menos'} que ${periodo}.`;
+
+  return [
+    el('div', { className: 'mes-nav' },
+      botaoIcone('esquerda', 'Mês anterior', () => { mesDeslocamento++; render(); }, !temAnterior),
+      el('h2', {}, nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1)),
+      botaoIcone('direita', 'Próximo mês', () => { mesDeslocamento--; render(); }, mesDeslocamento === 0)),
+    el('section', { className: 'cartao' },
+      el('div', { className: 'numeros numeros-4' },
+        numero('Treinos', String(atual.treinos)),
+        numero('Tempo', atual.tempo ? fmtDuracao(atual.tempo) : '–'),
+        numero('Séries', String(atual.series)),
+        numero('Volume', atual.volume ? `${fmtNum(Math.round(atual.volume / 100) / 10)} t` : '–')),
+      comparacao ? el('p', { className: 'mudo nota mes-comparacao' }, comparacao) : null),
+    el('section', { className: 'cartao' },
+      el('h2', {}, 'Séries por grupo muscular'),
+      atual.series ? el('p', { className: 'mudo nota' }, `Mais treinado: ${grupos[0][0]}. Menos treinado: ${grupos.filter(([g]) => g !== 'Outros').at(-1)[0]}.`) : null,
+      el('ul', { className: 'barras' }, grupos.filter(([g, n]) => g !== 'Outros' || n > 0).map(([g, n]) => el('li', {},
+        el('span', { className: 'barra-rotulo' }, g),
+        el('span', { className: 'barra-trilho' }, el('span', { className: 'barra-valor', style: { width: `${(n / maior) * 100}%` } })),
+        el('span', { className: `barra-num num${n ? '' : ' mudo'}` }, n))))),
+  ];
+}
+
 // Passo "redondo" para as linhas de grade (1, 2, 2,5, 5 × 10^n)
 function passoBonito(bruto) {
   const pot = 10 ** Math.floor(Math.log10(bruto));
@@ -876,7 +1360,7 @@ function passoBonito(bruto) {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * pot;
 }
 
-function graficoLinha(pontos, unidade) {
+function graficoLinha(pontos, unidade, rotulo) {
   const NS = 'http://www.w3.org/2000/svg';
   const s = (tag, attrs, texto) => {
     const e = document.createElementNS(NS, tag);
@@ -902,7 +1386,7 @@ function graficoLinha(pontos, unidade) {
   const x = (p, i) => (pontos.length === 1 ? m.l + largura / 2 : t1 > t0 ? m.l + ((p.data - t0) / (t1 - t0)) * largura : m.l + (i / (pontos.length - 1)) * largura);
   const y = (v) => m.t + (1 - (v - min) / (max - min)) * (H - m.t - m.b);
 
-  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'grafico', role: 'img', 'aria-label': `Evolução de ${exGrafico} em ${unidade}` });
+  const svg = s('svg', { viewBox: `0 0 ${W} ${H}`, class: 'grafico', role: 'img', 'aria-label': `${rotulo} em ${unidade}` });
   const linhas = Math.round((max - min) / passo);
   for (let k = 0; k <= linhas; k++) {
     const v = min + k * passo;
@@ -955,17 +1439,29 @@ function telaAjustes() {
     onchange: (e) => { dados.config.som = e.target.checked; salvar(); if (e.target.checked) { destravarSom(); tocarFim(); } },
   });
   const arquivo = el('input', { type: 'file', accept: 'application/json,.json', hidden: true, onchange: importar });
+  const temWakeLock = 'wakeLock' in navigator;
+  const telaLigada = el('input', {
+    type: 'checkbox', className: 'chave', checked: dados.config.telaLigada && temWakeLock, disabled: !temWakeLock,
+    onchange: (e) => { dados.config.telaLigada = e.target.checked; salvar(); },
+  });
+  const ultimoBackup = dados.config.ultimoBackup ? `Último backup: ${fmtData(dados.config.ultimoBackup)}.` : 'Nenhum backup feito ainda.';
 
   return [
     el('section', { className: 'cartao' },
-      el('h2', {}, 'Descanso'),
+      el('h2', {}, 'Durante o treino'),
       el('label', { className: 'opcao' },
         el('span', {}, el('b', {}, 'Bipe quando o descanso acabar'),
           el('small', {}, 'No iPhone o som não toca com o modo silencioso ligado nem com o app fechado. O tempo continua contando certo mesmo assim.')),
-        som)),
+        som),
+      el('label', { className: 'opcao' },
+        el('span', {}, el('b', {}, 'Manter a tela ligada'),
+          el('small', {}, temWakeLock
+            ? 'A tela não apaga sozinha enquanto o treino estiver aberto. Gasta um pouco mais de bateria.'
+            : 'Este aparelho não permite. Precisa do iOS 16.4 ou mais novo.')),
+        telaLigada)),
     el('section', { className: 'cartao' },
       el('h2', {}, 'Backup'),
-      el('p', { className: 'mudo paragrafo' }, `Tudo fica só neste aparelho (${plural(dados.sessoes.length, 'treino', 'treinos')}, ${plural(dados.programas.length, 'ficha', 'fichas')}). Faça um backup de vez em quando: se os dados do Safari forem apagados ou você trocar de celular, é ele que salva o histórico.`),
+      el('p', { className: 'mudo paragrafo' }, `Tudo fica só neste aparelho (${plural(dados.sessoes.length, 'treino', 'treinos')}, ${plural(dados.programas.length, 'ficha', 'fichas')}). ${ultimoBackup} Se os dados do Safari forem apagados ou você trocar de celular, é o backup que salva o histórico.`),
       el('div', { className: 'ficha-acoes' },
         el('button', { className: 'botao primario pequeno', onclick: exportar }, icone('download', 16), 'Exportar backup'),
         el('button', { className: 'botao secundario pequeno', onclick: () => arquivo.click() }, icone('arquivo', 16), 'Restaurar backup'),
@@ -988,16 +1484,22 @@ async function exportar() {
   const texto = JSON.stringify({ ...dados, exportadoEm: new Date().toISOString() }, null, 2);
   const nome = `treino-backup-${new Date().toISOString().slice(0, 10)}.json`;
   const arquivo = new File([texto], nome, { type: 'application/json' });
-  // No iPhone abre a folha de compartilhamento ("Salvar em Arquivos", AirDrop, WhatsApp...)
+  // No iPhone abre a folha de compartilhamento ("Salvar em Arquivos", AirDrop, WhatsApp...).
+  // Se a pessoa fechar a folha sem escolher nada, o share dá erro e o backup não conta como feito.
   if (navigator.canShare?.({ files: [arquivo] })) {
-    try { await navigator.share({ files: [arquivo], title: 'Backup do Treino' }); } catch {}
-    return;
+    try { await navigator.share({ files: [arquivo], title: 'Backup do Treino' }); } catch { return; }
+  } else {
+    const a = el('a', { href: URL.createObjectURL(arquivo), download: nome });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
-  const a = el('a', { href: URL.createObjectURL(arquivo), download: nome });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  dados.config.ultimoBackup = Date.now();
+  dados.config.backupAdiado = null;
+  salvar();
+  render();
+  toast('Backup exportado');
 }
 
 async function importar(ev) {
