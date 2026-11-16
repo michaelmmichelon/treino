@@ -1,6 +1,6 @@
 // Service worker: guarda os arquivos do app no aparelho para abrir sem internet.
 // Ao mudar qualquer arquivo, troque a VERSAO: o celular baixa tudo de novo.
-const VERSAO = 'treino-v3';
+const VERSAO = 'treino-v4';
 const ARQUIVOS = [
   './', 'index.html', 'app.css', 'tema.css', 'ui.js', 'exercicios.js', 'treinos.js', 'app.js', 'manifest.webmanifest',
   'icones/icone-180.png', 'icones/icone-192.png', 'icones/icone-512.png',

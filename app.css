@@ -397,6 +397,8 @@ dialog.dialogo.guia {
 .lembrete-topo p { font-size: .88rem; color: var(--texto-2); margin-top: 2px; }
 
 /* ---------- Ajustes ---------- */
+.botao.instalar { margin: 12px 0 4px; }
+.cartao .tabela-dados { margin-top: 12px; }
 .cartao > .opcao + .opcao { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--borda); }
 .cartao > h2 + .opcao { margin-top: 10px; }
 .opcao { display: flex; align-items: center; justify-content: space-between; gap: 16px; cursor: pointer; }

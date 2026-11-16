@@ -1,10 +1,41 @@
 // =====================================================================
 // Treino — fichas, registro de séries, descanso e evolução de carga.
-// Roda inteiro no celular: os dados ficam no localStorage do Safari.
+// Roda inteiro no celular (iPhone ou Android): os dados ficam no localStorage do navegador.
 // =====================================================================
 const { el, icone, toast, confirmar, pedirTexto } = UI;
 
 const CHAVE = 'treino-dados';
+
+// ------------------------------------------------------------------
+// Aparelho: muda as instruções de instalação e os avisos de cada sistema.
+// iPad novo se apresenta como Mac, então também olhamos se a tela é de toque.
+// ------------------------------------------------------------------
+const PLATAFORMA = /iphone|ipad|ipod/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1)
+  ? 'ios'
+  : /android/i.test(navigator.userAgent) ? 'android' : 'outro';
+// Aberto pelo ícone (instalado) e não por uma aba do navegador
+const instalado = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+// O Chrome do Android avisa quando o app pode ser instalado; guardamos o evento para
+// mostrar o nosso botão "Instalar app" (o iPhone não tem isso: instala só pelo Safari).
+let pedidoInstalacao = null;
+window.addEventListener('beforeinstallprompt', (ev) => {
+  ev.preventDefault();
+  pedidoInstalacao = ev;
+  if (typeof render === 'function') render();
+});
+window.addEventListener('appinstalled', () => {
+  pedidoInstalacao = null;
+  toast('App instalado! Abra pelo ícone na tela inicial.');
+  render();
+});
+async function instalarApp() {
+  if (!pedidoInstalacao) return;
+  pedidoInstalacao.prompt();
+  await pedidoInstalacao.userChoice.catch(() => {});
+  pedidoInstalacao = null; // o mesmo pedido não pode ser usado duas vezes
+  render();
+}
 const DESCANSOS = [30, 45, 60, 75, 90, 120, 150, 180, 240, 300];
 
 // ------------------------------------------------------------------
@@ -267,7 +298,7 @@ function cartaoBackup() {
         el('strong', {}, 'Hora de fazer um backup'),
         el('p', {}, dias === null
           ? `Você já tem ${plural(dados.sessoes.length, 'treino', 'treinos')} salvos só neste celular e ainda não fez nenhum backup.`
-          : `O último foi há ${dias} dias. Se os dados do Safari forem apagados, o histórico vai junto.`))),
+          : `O último foi há ${dias} dias. Se os dados do navegador forem apagados, o histórico vai junto.`))),
     el('div', { className: 'ficha-acoes' },
       el('button', { className: 'botao primario pequeno', onclick: exportar }, icone('download', 16), 'Exportar agora'),
       el('button', { className: 'botao fantasma pequeno', onclick: () => { dados.config.backupAdiado = Date.now(); salvar(); render(); } }, 'Depois')));
@@ -624,7 +655,7 @@ function fecharSessao() {
 }
 
 // ------------------------------------------------------------------
-// Tela sempre ligada durante o treino (Wake Lock, iOS 16.4 ou mais novo).
+// Tela sempre ligada durante o treino (Wake Lock: iOS 16.4+ e Chrome do Android).
 // O sistema solta a trava quando o app vai para segundo plano; ao voltar, pedimos de novo.
 // ------------------------------------------------------------------
 let travaTela = null;
@@ -980,7 +1011,7 @@ function encerrar() {
 
 // ------------------------------------------------------------------
 // Cronômetro de descanso
-// Guarda a HORA em que o descanso acaba (não um contador): no iPhone os timers
+// Guarda a HORA em que o descanso acaba (não um contador): no celular os timers
 // param com o app em segundo plano, e ao voltar o tempo restante continua certo.
 // ------------------------------------------------------------------
 const descansoEl = document.getElementById('descanso');
@@ -1032,7 +1063,7 @@ document.getElementById('descansoPular').addEventListener('click', pararDescanso
 
 setInterval(() => { tickDescanso(); atualizarRelogio(); }, 250);
 
-// Som: o iPhone só libera áudio depois de um toque do usuário, então o
+// Som: o navegador só libera áudio depois de um toque do usuário, então o
 // AudioContext é criado/retomado nos cliques (começar treino, marcar série).
 let audio = null;
 function destravarSom() {
@@ -1445,34 +1476,31 @@ function telaAjustes() {
     onchange: (e) => { dados.config.telaLigada = e.target.checked; salvar(); },
   });
   const ultimoBackup = dados.config.ultimoBackup ? `Último backup: ${fmtData(dados.config.ultimoBackup)}.` : 'Nenhum backup feito ainda.';
+  const avisoSom = {
+    ios: 'No iPhone o som não toca com o modo silencioso ligado nem com o app fechado. O tempo continua contando certo mesmo assim.',
+    android: 'O celular também vibra no fim do descanso. Com o app fechado não há aviso, mas o tempo continua contando certo.',
+    outro: 'Com o app fechado não há aviso, mas o tempo continua contando certo.',
+  }[PLATAFORMA];
+  const semWakeLock = { ios: 'Este aparelho não permite. Precisa do iOS 16.4 ou mais novo.', android: 'Este navegador não permite. Use o Chrome atualizado.', outro: 'Este navegador não permite.' }[PLATAFORMA];
 
   return [
     el('section', { className: 'cartao' },
       el('h2', {}, 'Durante o treino'),
       el('label', { className: 'opcao' },
-        el('span', {}, el('b', {}, 'Bipe quando o descanso acabar'),
-          el('small', {}, 'No iPhone o som não toca com o modo silencioso ligado nem com o app fechado. O tempo continua contando certo mesmo assim.')),
+        el('span', {}, el('b', {}, 'Bipe quando o descanso acabar'), el('small', {}, avisoSom)),
         som),
       el('label', { className: 'opcao' },
         el('span', {}, el('b', {}, 'Manter a tela ligada'),
-          el('small', {}, temWakeLock
-            ? 'A tela não apaga sozinha enquanto o treino estiver aberto. Gasta um pouco mais de bateria.'
-            : 'Este aparelho não permite. Precisa do iOS 16.4 ou mais novo.')),
+          el('small', {}, temWakeLock ? 'A tela não apaga sozinha enquanto o treino estiver aberto. Gasta um pouco mais de bateria.' : semWakeLock)),
         telaLigada)),
     el('section', { className: 'cartao' },
       el('h2', {}, 'Backup'),
-      el('p', { className: 'mudo paragrafo' }, `Tudo fica só neste aparelho (${plural(dados.sessoes.length, 'treino', 'treinos')}, ${plural(dados.programas.length, 'ficha', 'fichas')}). ${ultimoBackup} Se os dados do Safari forem apagados ou você trocar de celular, é o backup que salva o histórico.`),
+      el('p', { className: 'mudo paragrafo' }, `Tudo fica só neste aparelho (${plural(dados.sessoes.length, 'treino', 'treinos')}, ${plural(dados.programas.length, 'ficha', 'fichas')}). ${ultimoBackup} Se os dados do navegador forem apagados ou você trocar de celular, é o backup que salva o histórico. O arquivo de backup funciona tanto no iPhone quanto no Android.`),
       el('div', { className: 'ficha-acoes' },
         el('button', { className: 'botao primario pequeno', onclick: exportar }, icone('download', 16), 'Exportar backup'),
         el('button', { className: 'botao secundario pequeno', onclick: () => arquivo.click() }, icone('arquivo', 16), 'Restaurar backup'),
         arquivo)),
-    el('section', { className: 'cartao' },
-      el('h2', {}, 'Instalar no iPhone'),
-      el('ol', { className: 'passos' },
-        el('li', {}, 'Abra este endereço no ', el('b', {}, 'Safari'), '.'),
-        el('li', {}, 'Toque em ', el('b', {}, 'Compartilhar'), ' (quadrado com a seta para cima).'),
-        el('li', {}, 'Escolha ', el('b', {}, 'Adicionar à Tela de Início'), '.'),
-        el('li', {}, 'Abra pelo ícone: o app fica em tela cheia e funciona sem internet.'))),
+    cartaoInstalar(),
     el('section', { className: 'cartao' },
       el('h2', {}, 'Apagar tudo'),
       el('p', { className: 'mudo paragrafo' }, 'Remove fichas, histórico e ajustes deste aparelho.'),
@@ -1480,11 +1508,47 @@ function telaAjustes() {
   ];
 }
 
+// Instruções de instalação do sistema em uso (as do outro ficam num "ver também")
+const PASSOS_INSTALAR = {
+  ios: ['iPhone', [
+    ['Abra este endereço no ', el('b', {}, 'Safari'), '.'],
+    ['Toque em ', el('b', {}, 'Compartilhar'), ' (quadrado com a seta para cima; em versões novas, fica no menu ', el('b', {}, '⋯'), ').'],
+    ['Escolha ', el('b', {}, 'Adicionar à Tela de Início'), '.'],
+  ]],
+  android: ['Android', [
+    ['Abra este endereço no ', el('b', {}, 'Chrome'), '.'],
+    ['Toque no menu ', el('b', {}, '⋮'), ' (três pontinhos, no canto de cima).'],
+    ['Escolha ', el('b', {}, 'Instalar app'), ' (ou ', el('b', {}, 'Adicionar à tela inicial'), ').'],
+  ]],
+};
+const listaPassos = (passos) => el('ol', { className: 'passos' },
+  passos.map((p) => el('li', {}, ...p.map((x) => (x instanceof Node ? x.cloneNode(true) : x)))),
+  el('li', {}, 'Abra pelo ícone: o app fica em tela cheia e funciona sem internet.'));
+
+function cartaoInstalar() {
+  if (instalado()) {
+    return el('section', { className: 'cartao' },
+      el('h2', {}, 'App instalado'),
+      el('p', { className: 'mudo paragrafo' }, 'Você está usando o app pelo ícone da tela inicial. Para instalar em outro celular, abra o mesmo endereço nele: funciona em iPhone e Android.'));
+  }
+  const principal = PLATAFORMA === 'android' ? 'android' : 'ios';
+  const outro = principal === 'ios' ? 'android' : 'ios';
+  const [nome, passos] = PASSOS_INSTALAR[principal];
+  return el('section', { className: 'cartao' },
+    el('h2', {}, PLATAFORMA === 'outro' ? 'Instalar no celular' : `Instalar no ${nome}`),
+    pedidoInstalacao ? el('button', { className: 'botao primario largo instalar', onclick: instalarApp }, icone('download', 18), 'Instalar app') : null,
+    pedidoInstalacao ? el('p', { className: 'mudo nota' }, 'Ou, pelo menu do navegador:') : null,
+    listaPassos(passos),
+    el('details', { className: 'tabela-dados' },
+      el('summary', {}, `Instalar no ${PASSOS_INSTALAR[outro][0]}`),
+      listaPassos(PASSOS_INSTALAR[outro][1])));
+}
+
 async function exportar() {
   const texto = JSON.stringify({ ...dados, exportadoEm: new Date().toISOString() }, null, 2);
   const nome = `treino-backup-${new Date().toISOString().slice(0, 10)}.json`;
   const arquivo = new File([texto], nome, { type: 'application/json' });
-  // No iPhone abre a folha de compartilhamento ("Salvar em Arquivos", AirDrop, WhatsApp...).
+  // No celular abre a folha de compartilhamento ("Salvar em Arquivos", Drive, WhatsApp...).
   // Se a pessoa fechar a folha sem escolher nada, o share dá erro e o backup não conta como feito.
   if (navigator.canShare?.({ files: [arquivo] })) {
     try { await navigator.share({ files: [arquivo], title: 'Backup do Treino' }); } catch { return; }
@@ -1540,6 +1604,23 @@ async function apagarTudo() {
 // ------------------------------------------------------------------
 // Início
 // ------------------------------------------------------------------
+// ------------------------------------------------------------------
+// Botão/gesto "voltar" do Android: fecha a janela aberta, minimiza o treino ou volta para Hoje,
+// em vez de fechar o app. Truque: deixamos uma entrada extra no histórico; cada "voltar" a consome,
+// fazemos a ação e colocamos outra no lugar. Na tela Hoje, sem nada aberto, o "voltar" sai do app.
+// ------------------------------------------------------------------
+const guardarVoltar = () => history.pushState({ treino: true }, '');
+window.addEventListener('popstate', () => {
+  const dialogo = [...document.querySelectorAll('dialog[open]')].pop();
+  if (dialogo) dialogo.dispatchEvent(new Event('cancel', { cancelable: true })); // cada diálogo fecha no próprio "cancel"
+  else if (!sessaoEl.hidden) fecharSessao();
+  else if (editando) { editando = null; render(); window.scrollTo(0, 0); }
+  else if (tela !== 'hoje') irPara('hoje');
+  else return; // nada para fechar: deixa o app sair
+  guardarVoltar();
+});
+guardarVoltar();
+
 atualizarListaExercicios();
 render();
 if (dados.emAndamento) abrirSessao(); // reabriu o app no meio do treino
